@@ -39,6 +39,69 @@ void bye()
     force_exit = 1;
 }
 
+int modify_passwords_file(const char *fname, const char *domain,
+                             const char *user, const char *pass) {
+	int found;
+	char line[512], u[512], d[512], ha1[33], tmp[512];
+	FILE *fp, *fp2;
+
+	found = 0;
+	fp = fp2 = NULL;
+
+	// Regard empty password as no password - remove user record.
+	if (pass != NULL && pass[0] == '\0') {
+		pass = NULL;
+	}
+
+	(void) snprintf(tmp, sizeof(tmp), "%s.tmp", fname);
+
+	// Create the file if does not exist
+	if ((fp = fopen(fname, "a+")) != NULL) {
+		(void) fclose(fp);
+	}
+
+	// Open the given file and temporary file
+	if ((fp = fopen(fname, "r")) == NULL) {
+		return 0;
+	} else if ((fp2 = fopen(tmp, "w+")) == NULL) {
+		fclose(fp);
+		return 0;
+	}
+
+	// Copy the stuff to temporary file
+	while (fgets(line, sizeof(line), fp) != NULL) {
+		if (sscanf(line, "%[^:]:%[^:]:%*s", u, d) != 2) {
+			continue;
+		}
+
+		if (!strcmp(u, user) && !strcmp(d, domain)) {
+		found++;
+		if (pass != NULL) {
+			mg_md5(ha1, user, ":", domain, ":", pass, NULL);
+			fprintf(fp2, "%s:%s:%s\n", user, domain, ha1);
+		}
+		} else {
+			(void) fprintf(fp2, "%s", line);
+		}
+	}
+
+	// If new user, just add it
+	if (!found && pass != NULL) {
+		mg_md5(ha1, user, ":", domain, ":", pass, NULL);
+		(void) fprintf(fp2, "%s:%s:%s\n", user, domain, ha1);
+	}
+
+	// Close files
+	(void) fclose(fp);
+	(void) fclose(fp2);
+
+	// Put the temp file in place of real file
+	(void) remove(fname);
+	(void) rename(tmp, fname);
+
+	return 1;
+}
+
 static int do_auth(struct mg_connection *conn) {
 	int result = MG_FALSE; // Not authorized
 	FILE *fp;
@@ -78,6 +141,21 @@ static int server_callback(struct mg_connection *conn, enum mg_event ev) {
     }
 }
 
+static void printUsage(const char* exename) {
+	fprintf(stderr, "Daemon Mode:\n"
+			" Usage: %s [OPTION]...\n\n"
+			" -h, --host <host>\t\tconnect to mpd at host [localhost]\n"
+			" -p, --port <port>\t\tconnect to mpd at port [6600]\n"
+			" -w, --webport [ip:]<port>\tlisten interface/port for webserver [8080]\n"
+			" -u, --user <username>\t\tdrop priviliges to user after socket bind\n"
+			" -V, --version\t\t\tget version\n"
+			" --help\t\t\t\tthis help\n"
+			"\n"
+			"Password Mode:\n"
+			" Usage %s -A <htpasswd_file> <realm> <user> <passwd>\n\n"
+			, exename, exename);
+}
+
 int main(int argc, char **argv)
 {
     int n, option_index = 0;
@@ -99,6 +177,7 @@ int main(int argc, char **argv)
     strcpy(mpd.host, "127.0.0.1");
 
     static struct option long_options[] = {
+		{"htpasswd",     required_argument, 0, 'A'},
         {"host",         required_argument, 0, 'h'},
         {"port",         required_argument, 0, 'p'},
         {"webport",      required_argument, 0, 'w'},
@@ -108,9 +187,26 @@ int main(int argc, char **argv)
         {0,              0,                 0,  0 }
     };
 
-    while((n = getopt_long(argc, argv, "h:p:w:u:v",
+    while((n = getopt_long(argc, argv, "A:h:p:w:u:v",
                 long_options, &option_index)) != -1) {
-        switch (n) {
+		if(option_index == 0 && n == 'A') {
+			int ret = EXIT_FAILURE;
+			while(1) {
+				if(argc != 6) {
+					printUsage(argv[0]);
+					break;
+				}
+				if(modify_passwords_file(argv[2], argv[3], argv[4], argv[5]) ) {
+					fprintf(stderr, "%s updated.\n", argv[2]);
+					ret = EXIT_SUCCESS;
+				} else {
+					fprintf(stderr, "%s updated.\n", argv[2]);
+				}
+				break;
+			}
+			return ret;
+		}
+		switch (n) {
             case 'h':
                 strncpy(mpd.host, optarg, sizeof(mpd.host));
                 break;
@@ -131,15 +227,8 @@ int main(int argc, char **argv)
                 return EXIT_SUCCESS;
                 break;
             default:
-                fprintf(stderr, "Usage: %s [OPTION]...\n\n"
-                        " -h, --host <host>\t\tconnect to mpd at host [localhost]\n"
-                        " -p, --port <port>\t\tconnect to mpd at port [6600]\n"
-                        " -w, --webport [ip:]<port>\tlisten interface/port for webserver [8080]\n"
-                        " -u, --user <username>\t\tdrop priviliges to user after socket bind\n"
-                        " -V, --version\t\t\tget version\n"
-                        " --help\t\t\t\tthis help\n"
-                        , argv[0]);
-                return EXIT_FAILURE;
+				printUsage(argv[0]);
+				return EXIT_FAILURE;
         }
 
         if(error_msg)
