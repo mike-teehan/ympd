@@ -1,7 +1,7 @@
 /* ympd
    (c) 2013-2014 Andrew Karpow <andy@ndyk.de>
    This project's homepage is: http://www.ympd.org
-   
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; version 2 of the License.
@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 #include <unistd.h>
 #include <getopt.h>
 #include <sys/time.h>
@@ -38,26 +39,40 @@ void bye()
     force_exit = 1;
 }
 
-static int server_callback(struct mg_connection *c, enum mg_event ev) {
+static int do_auth(struct mg_connection *conn) {
+	int result = MG_FALSE; // Not authorized
+	FILE *fp;
+
+	// To populate passwords file, do
+	// mongoose -A my_passwords.txt mydomain.com admin admin
+	if ((fp = fopen(".htpasswd", "r")) != NULL) {
+		result = mg_authorize_digest(conn, fp);
+		fclose(fp);
+	}
+
+	return result;
+}
+
+static int server_callback(struct mg_connection *conn, enum mg_event ev) {
     switch(ev) {
         case MG_CLOSE:
-            mpd_close_handler(c);
+            mpd_close_handler(conn);
             return MG_TRUE;
         case MG_REQUEST:
-            if (c->is_websocket) {
-                c->content[c->content_len] = '\0';
-                if(c->content_len)
-                    return callback_mpd(c);
+            if (conn->is_websocket) {
+                conn->content[conn->content_len] = '\0';
+                if(conn->content_len)
+                    return callback_mpd(conn);
                 else
                     return MG_TRUE;
             } else
 #ifdef WITH_DYNAMIC_ASSETS
                 return MG_FALSE;
 #else
-                return callback_http(c);
+                return callback_http(conn);
 #endif
         case MG_AUTH:
-            return MG_TRUE;
+			return do_auth(conn);
         default:
             return MG_FALSE;
     }
@@ -67,6 +82,9 @@ int main(int argc, char **argv)
 {
     int n, option_index = 0;
     struct mg_server *server = mg_create_server(NULL, server_callback);
+
+    mg_set_option(server, "ports", "8080");
+
     unsigned int current_timer = 0, last_timer = 0;
     char *run_as_user = NULL;
     char const *error_msg = NULL;
@@ -150,6 +168,7 @@ int main(int argc, char **argv)
 
     while (!force_exit) {
         mg_poll_server(server, 200);
+
         current_timer = time(NULL);
         if(current_timer - last_timer)
         {
